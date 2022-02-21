@@ -11,3 +11,10 @@ func TestURLFileCache(t *testing.T) {
 	path := ToPath(url)
 	fmt.Println(path)
 }
+
+func TestToCustomPath(t *testing.T) {
+	url := "https://sansec.io/robots.txt"
+	dst := "/tmp/robots.txt"
+	ToCustomPath(url, dst)
+	fmt.Println(dst)
+}

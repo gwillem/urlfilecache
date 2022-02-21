@@ -33,9 +33,23 @@ func getMtime(path string) *time.Time {
 	return &mtime
 }
 
+// ToPath will calculate unique cache path based on program name and source URL. Silently ignores errors.
 func ToPath(url string) (path string) {
-
 	path = getCachePath(url)
+	ToCustomPath(url, path) // ignore err
+	return path
+}
+
+// ToCustomPath uses path as explicit cache location.
+func ToCustomPath(url, path string) error {
+
+	// Ensure parent dir
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+		return err
+	}
+
+	// Get old mtime
 	mtime := getMtime(path) // returns nil if nonexist
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -59,12 +73,12 @@ func ToPath(url string) (path string) {
 	if resp.StatusCode == 304 {
 		// Urray! No need to fetch newer
 		// fmt.Println("Using disk cache because URL is not newer")
-		return path
+		return nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		// fmt.Println("Bad HTTP response", resp.Status, "so trying previous copy instead...")
-		return path
+		// fmt.Println(")
+		return fmt.Errorf("bad HTTP response %s so trying previous copy instead", resp.Status)
 		// log.Fatalf("bad status: %s", resp.Status)
 	}
 
@@ -77,27 +91,28 @@ func ToPath(url string) (path string) {
 
 	fh, err := os.Create(path)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	// Writer the body to file
 	_, err = io.Copy(fh, resp.Body)
 	fh.Close()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	// Sync mtime for downloaded file with given header
 	err = os.Chtimes(path, lastModified, lastModified)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	if mtime == nil {
-		// fmt.Println("Downloaded new copy from", url)
-	} else {
-		// fmt.Println("Replaced existing disk cache with newer copy")
-	}
+	// if mtime == nil {
+	// 	fmt.Println("Downloaded new copy from", url)
+	// } else {
+	// 	fmt.Println("Replaced existing disk cache with newer copy")
+	// }
 
-	return path
+	// Hurray!
+	return nil
 }
