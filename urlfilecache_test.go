@@ -2,6 +2,8 @@ package urlfilecache
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"testing"
 )
 
@@ -17,4 +19,12 @@ func TestToCustomPath(t *testing.T) {
 	dst := "/tmp/robots.txt"
 	ToCustomPath(url, dst)
 	fmt.Println(dst)
+}
+
+func TestReplaceSelf(t *testing.T) {
+	url := "https://sansec.io/robots.txt"
+	self, _ := os.Executable()
+	if e := ToCustomPath(url, self); e != nil {
+		log.Fatal(e)
+	}
 }

@@ -36,7 +36,9 @@ func getMtime(path string) *time.Time {
 // ToPath will calculate unique cache path based on program name and source URL. Silently ignores errors.
 func ToPath(url string) (path string) {
 	path = getCachePath(url)
-	ToCustomPath(url, path) // ignore err
+	if e := ToCustomPath(url, path); e != nil {
+		log.Fatal(e)
+	}
 	return path
 }
 
@@ -54,7 +56,7 @@ func ToCustomPath(url, path string) error {
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	// Only conditional request when we have an mtime
@@ -66,7 +68,7 @@ func ToCustomPath(url, path string) error {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -89,22 +91,32 @@ func ToCustomPath(url, path string) error {
 	// fmt.Println(ts)
 	// fmt.Println(ts.Format(http.TimeFormat))
 
-	fh, err := os.Create(path)
+	// Use tmpPath for atomic writes, and to be able to replace /proc/$$/self
+	tmpPath := path + ".tmp"
+
+	fh, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
 
 	// Writer the body to file
 	_, err = io.Copy(fh, resp.Body)
-	fh.Close()
+	if e := fh.Close(); e != nil {
+		return e
+	}
+
 	if err != nil {
 		return err
 	}
 
+	// Replaces any existing path (if file)
+	if e := os.Rename(tmpPath, path); e != nil {
+		return e
+	}
+
 	// Sync mtime for downloaded file with given header
-	err = os.Chtimes(path, lastModified, lastModified)
-	if err != nil {
-		return err
+	if e := os.Chtimes(path, lastModified, lastModified); e != nil {
+		return e
 	}
 
 	// if mtime == nil {
