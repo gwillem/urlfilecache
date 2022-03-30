@@ -109,9 +109,20 @@ func ToCustomPath(url, path string) error {
 		return err
 	}
 
+	// Preserve old stat (ie execute permissions),
+	// ignore error (file does not exist)
+	oldStat, _ := os.Stat(path)
+
 	// Replaces any existing path (if file)
 	if e := os.Rename(tmpPath, path); e != nil {
 		return e
+	}
+
+	// Preserve permissions, if any
+	if oldStat != nil {
+		if e := os.Chmod(path, oldStat.Mode()); e != nil {
+			return e
+		}
 	}
 
 	// Sync mtime for downloaded file with given header
