@@ -13,31 +13,31 @@ import (
 	"github.com/adrg/xdg"
 )
 
+var Log = log.New(os.Stderr, "urlfilecache", log.LstdFlags)
+
 func getCachePath(url string) string {
 	hash := fmt.Sprintf("%x", sha1.Sum([]byte(url)))
 	self := filepath.Base(os.Args[0])
 
 	name, err := xdg.CacheFile(fmt.Sprintf("%s/%s.urlcache", self, hash))
 	if err != nil {
-		log.Fatal(err)
+		Log.Fatal(err)
 	}
 	return name
 }
 
-func getMtime(path string) *time.Time {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return nil
+func getMtime(path string) time.Time {
+	if fi, err := os.Stat(path); err == nil {
+		return fi.ModTime().UTC()
 	}
-	mtime := fi.ModTime().UTC()
-	return &mtime
+	return time.Time{}
 }
 
 // ToPath will calculate unique cache path based on program name and source URL. Silently ignores errors.
 func ToPath(url string) (path string) {
 	path = getCachePath(url)
 	if e := ToCustomPath(url, path); e != nil {
-		log.Fatal(e)
+		Log.Println("ToCustomPath:", e)
 	}
 	return path
 }
@@ -52,7 +52,7 @@ func ToCustomPath(url, path string) error {
 	}
 
 	// Get old mtime
-	mtime := getMtime(path) // returns nil if nonexist
+	mtime := getMtime(path) // returns empty time if nonexist
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -60,13 +60,12 @@ func ToCustomPath(url, path string) error {
 	}
 
 	// Only conditional request when we have an mtime
-	if mtime != nil {
+	if !mtime.IsZero() {
 		// fmt.Println("if modified since:\n" + mtime.Format(http.TimeFormat))
 		req.Header.Set("If-Modified-Since", mtime.Format(http.TimeFormat))
 	}
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -101,12 +100,12 @@ func ToCustomPath(url, path string) error {
 
 	// Writer the body to file
 	_, err = io.Copy(fh, resp.Body)
-	if e := fh.Close(); e != nil {
-		return e
-	}
-
 	if err != nil {
 		return err
+	}
+
+	if e := fh.Close(); e != nil {
+		return e
 	}
 
 	// Preserve old stat (ie execute permissions),
