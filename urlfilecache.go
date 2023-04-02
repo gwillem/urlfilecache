@@ -61,9 +61,6 @@ func ToCustomPath(url, path string) error {
 
 	// Only conditional request when we have an mtime
 	if !mtime.IsZero() {
-		// fmt.Println("if modified since:\n" + mtime.Format(http.TimeFormat))
-
-		fmt.Println("setting if-modified-since:", mtime.Format(http.TimeFormat))
 		req.Header.Set("If-Modified-Since", mtime.Format(http.TimeFormat))
 	}
 
