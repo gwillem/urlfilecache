@@ -62,8 +62,27 @@ func ToCustomPath(url, path string) error {
 	// Only conditional request when we have an mtime
 	if !mtime.IsZero() {
 		// fmt.Println("if modified since:\n" + mtime.Format(http.TimeFormat))
+
+		fmt.Println("setting if-modified-since:", mtime.Format(http.TimeFormat))
 		req.Header.Set("If-Modified-Since", mtime.Format(http.TimeFormat))
 	}
+
+	/*
+
+			GRRR somehow cloudflare and/or nginx does not respect the if-modified-since header
+			AHA there it is: http://nginx.org/en/docs/http/ngx_http_core_module.html#if_modified_since
+
+			corediff on  wdg/vendor [!?] via 🐹 v1.20.2
+		❯ curl -sH "If-Modified-Since: Fri, 31 Mar 2023 15:00:59 GMT" -I https://sansec.io/downloads/darwin-arm64/corediff | egrep 'last-modified|HTTP/2'
+		HTTP/2 304
+		last-modified: Fri, 31 Mar 2023 15:00:59 GMT
+
+		corediff on  wdg/vendor [!?] via 🐹 v1.20.2
+		❯ curl -sH "If-Modified-Since: Sat, 01 Apr 2023 22:00:07 GMT" -I https://sansec.io/downloads/darwin-arm64/corediff | egrep 'last-modified|HTTP/2'
+		HTTP/2 200
+		last-modified: Fri, 31 Mar 2023 15:00:59 GMT
+
+	*/
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -73,22 +92,14 @@ func ToCustomPath(url, path string) error {
 
 	if resp.StatusCode == 304 {
 		// Urray! No need to fetch newer
-		// fmt.Println("Using disk cache because URL is not newer")
 		return nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		// fmt.Println(")
 		return fmt.Errorf("bad HTTP response %s so trying previous copy instead", resp.Status)
-		// log.Fatalf("bad status: %s", resp.Status)
 	}
 
 	lastModified, _ := http.ParseTime(resp.Header.Get("Last-Modified"))
-
-	// fmt.Println("last-modified:\n" + resp.Header.Get("Last-Modified"))
-	// ts, _ := http.ParseTime(resp.Header.Get("Last-Modified"))
-	// fmt.Println(ts)
-	// fmt.Println(ts.Format(http.TimeFormat))
 
 	// Use tmpPath for atomic writes, and to be able to replace /proc/$$/self
 	tmpPath := path + ".tmp"
@@ -98,9 +109,7 @@ func ToCustomPath(url, path string) error {
 		return err
 	}
 
-	// Writer the body to file
-	_, err = io.Copy(fh, resp.Body)
-	if err != nil {
+	if _, err = io.Copy(fh, resp.Body); err != nil {
 		return err
 	}
 
@@ -124,17 +133,11 @@ func ToCustomPath(url, path string) error {
 		}
 	}
 
-	// Sync mtime for downloaded file with given header
+	// Sync mtime for downloaded file with given header. This is required
+	// because nginx (by default) only uses caching for exact timestamp matches
 	if e := os.Chtimes(path, lastModified, lastModified); e != nil {
 		return e
 	}
 
-	// if mtime == nil {
-	// 	fmt.Println("Downloaded new copy from", url)
-	// } else {
-	// 	fmt.Println("Replaced existing disk cache with newer copy")
-	// }
-
-	// Hurray!
 	return nil
 }
