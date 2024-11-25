@@ -15,15 +15,10 @@ import (
 
 var Log = log.New(os.Stderr, "urlfilecache", log.LstdFlags)
 
-func getCachePath(url string) string {
+func getCachePath(url string) (string, error) {
 	hash := fmt.Sprintf("%x", sha1.Sum([]byte(url)))
 	self := filepath.Base(os.Args[0])
-
-	name, err := xdg.CacheFile(fmt.Sprintf("%s/%s.urlcache", self, hash))
-	if err != nil {
-		Log.Fatal(err)
-	}
-	return name
+	return xdg.CacheFile(fmt.Sprintf("%s/%s.urlcache", self, hash))
 }
 
 func getMtime(path string) time.Time {
@@ -34,17 +29,28 @@ func getMtime(path string) time.Time {
 }
 
 // ToPath will calculate unique cache path based on program name and source URL. Silently ignores errors.
-func ToPath(url string) (path string) {
-	path = getCachePath(url)
-	if e := ToCustomPath(url, path); e != nil {
-		Log.Println("ToCustomPath:", e)
+func ToPath(url string) (path string, err error) {
+	return ToPathTTL(url, 0)
+}
+
+// ToPathTTL will calculate unique cache path based on program name and source URL.
+func ToPathTTL(url string, ttl time.Duration) (path string, err error) {
+	path, err = getCachePath(url)
+	if err != nil {
+		return "", err
 	}
-	return path
+	if err := ToCustomPathTTL(url, path, ttl); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func ToCustomPath(url, path string) error {
+	return ToCustomPathTTL(url, path, 0)
 }
 
 // ToCustomPath uses path as explicit cache location.
-func ToCustomPath(url, path string) error {
-
+func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 	// Ensure parent dir
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
@@ -53,6 +59,11 @@ func ToCustomPath(url, path string) error {
 
 	// Get old mtime
 	mtime := getMtime(path) // returns empty time if nonexist
+
+	// Don't bother if file hasn't expired
+	if !mtime.IsZero() && time.Since(mtime) < ttl {
+		return nil
+	}
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -96,7 +107,10 @@ func ToCustomPath(url, path string) error {
 		return fmt.Errorf("bad HTTP response %s so trying previous copy instead", resp.Status)
 	}
 
-	lastModified, _ := http.ParseTime(resp.Header.Get("Last-Modified"))
+	lastModified, err := http.ParseTime(resp.Header.Get("Last-Modified"))
+	if err != nil {
+		return fmt.Errorf("failed to parse Last-Modified header: %w", err)
+	}
 
 	// Use tmpPath for atomic writes, and to be able to replace /proc/$$/self
 	tmpPath := path + ".tmp"
@@ -110,8 +124,8 @@ func ToCustomPath(url, path string) error {
 		return err
 	}
 
-	if e := fh.Close(); e != nil {
-		return e
+	if err := fh.Close(); err != nil {
+		return err
 	}
 
 	// Preserve old stat (ie execute permissions),
