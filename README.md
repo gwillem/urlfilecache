@@ -6,7 +6,7 @@ Simple URL fetcher & cache. Will only fetch updated resource when actually newer
 import "github.com/gwillem/urlfilecache"
 
 url := "https://google.com/robots.txt"
-path := urlfilecache.toPath(url)
+path := urlfilecache.ToPath(url)
 // /home/you/.cache/<cmd>/<hash>.urlcache
 data, err := os.Readfile(path)
 ```

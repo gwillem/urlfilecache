@@ -18,7 +18,39 @@ var Log = log.New(os.Stderr, "urlfilecache", log.LstdFlags)
 func getCachePath(url string) (string, error) {
 	hash := fmt.Sprintf("%x", sha1.Sum([]byte(url)))
 	self := filepath.Base(os.Args[0])
-	return xdg.CacheFile(fmt.Sprintf("%s/%s.urlcache", self, hash))
+	relPath := fmt.Sprintf("%s/%s.urlcache", self, hash)
+
+	// Try each location in order until we find one that's writable
+	locations := []string{
+		xdg.CacheHome,
+		"/tmp",
+		"/var/tmp",
+		"/dev/shm",
+	}
+
+	for _, dir := range locations {
+		path := filepath.Join(dir, relPath)
+		// if path exists and is a regular file (not dir or symlink), it was written before
+		if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
+			// Try opening in write mode to verify writability
+			if f, err := os.OpenFile(path, os.O_WRONLY, 0o644); err == nil {
+				f.Close()
+				return path, nil
+			}
+			continue // prev cache file exists but is not writable, find other dir
+		}
+
+		// Ensure parent directory exists and is writable
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
+			// Try creating a temp file to verify writability
+			if f, err := os.CreateTemp(filepath.Dir(path), ".test"); err == nil {
+				os.Remove(f.Name())
+				return path, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no writable location found in: %v", locations)
 }
 
 func getMtime(path string) time.Time {
