@@ -139,8 +139,9 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 		return fmt.Errorf("bad HTTP response %s so trying previous copy instead", resp.Status)
 	}
 
-	lastModified, err := http.ParseTime(resp.Header.Get("Last-Modified"))
-	if err != nil {
+	header := resp.Header.Get("Last-Modified")
+	lastModified, err := http.ParseTime(header)
+	if header != "" && err != nil {
 		return fmt.Errorf("failed to parse Last-Modified header: %w", err)
 	}
 
