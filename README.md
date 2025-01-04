@@ -1,6 +1,6 @@
 # Simple URL file cache
 
-Simple URL fetcher & cache. Will only fetch updated resource when actually newer (using `If-Modified-Since` HTTP header), so suitable for large data files.
+Simple URL fetcher & cache. Will only fetch updated resource when actually newer (using `If-Modified-Since` and `ETag` HTTP headers), so suitable for large data files. Caching is based on best-effort and could not happen if server doesn't send appropriate headers or local files couldn't be written.
 
 ## Basic Usage
 
@@ -9,7 +9,7 @@ import "github.com/gwillem/urlfilecache"
 
 url := "https://google.com/robots.txt"
 path, err := urlfilecache.ToPath(url)
-// /home/you/.cache/<cmd>/<hash>.urlcache
+// /home/you/.cache/<cmd>/<hash>.data
 data, err := os.ReadFile(path)
 ```
 

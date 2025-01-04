@@ -13,12 +13,17 @@ import (
 	"github.com/adrg/xdg"
 )
 
+const (
+	dataSuffix = "data"
+	etagSuffix = "etag"
+)
+
 var Log = log.New(os.Stderr, "urlfilecache", log.LstdFlags)
 
-func getCachePath(url string) (string, error) {
+func getCachePath(url, suffix string) (string, error) {
 	hash := fmt.Sprintf("%x", sha1.Sum([]byte(url)))
 	self := filepath.Base(os.Args[0])
-	relPath := fmt.Sprintf("%s/%s.urlcache", self, hash)
+	relPath := fmt.Sprintf("%s/%s.%s", self, hash, suffix)
 
 	// Try each location in order until we find one that's writable
 	locations := []string{
@@ -67,7 +72,7 @@ func ToPath(url string) (path string, err error) {
 
 // ToPathTTL will calculate unique cache path based on program name and source URL.
 func ToPathTTL(url string, ttl time.Duration) (path string, err error) {
-	path, err = getCachePath(url)
+	path, err = getCachePath(url, dataSuffix)
 	if err != nil {
 		return "", err
 	}
@@ -100,6 +105,10 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return err
+	}
+
+	if etag := readETag(url); etag != "" {
+		req.Header.Set("If-None-Match", etag)
 	}
 
 	// Only conditional request when we have an mtime
@@ -139,10 +148,14 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 		return fmt.Errorf("bad HTTP response %s so trying previous copy instead", resp.Status)
 	}
 
-	lastModified, err := http.ParseTime(resp.Header.Get("Last-Modified"))
-	if err != nil {
-		return fmt.Errorf("failed to parse Last-Modified header: %w", err)
+	if etag := resp.Header.Get("ETag"); etag != "" {
+		if err := writeETag(url, etag); err != nil {
+			return err
+		}
 	}
+
+	// dont care if no last-modified header
+	lastModified, _ := http.ParseTime(resp.Header.Get("Last-Modified"))
 
 	// Use tmpPath for atomic writes, and to be able to replace /proc/$$/self
 	tmpPath := path + ".tmp"
@@ -183,4 +196,21 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 	}
 
 	return nil
+}
+
+func readETag(url string) string {
+	etagPath, err := getCachePath(url, etagSuffix)
+	if err != nil {
+		return ""
+	}
+	data, _ := os.ReadFile(etagPath)
+	return string(data)
+}
+
+func writeETag(url, etag string) error {
+	etagPath, err := getCachePath(url, etagSuffix)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(etagPath, []byte(etag), 0o600)
 }

@@ -131,7 +131,7 @@ func TestGetCachePath(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.setupFunc()
 
-			got, err := getCachePath(testURL)
+			got, err := getCachePath(testURL, "testdata")
 			if tt.wantErr {
 				require.Error(t, err)
 				return
@@ -153,4 +153,68 @@ func TestGetCachePath(t *testing.T) {
 			f.Close()
 		})
 	}
+}
+
+func TestEmptyLastModified(t *testing.T) {
+	ts, err := http.ParseTime("")
+	require.Error(t, err)
+	require.Equal(t, time.Time{}, ts)
+}
+
+func TestEmptyLastModifiedHeader(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Deliberately not setting Last-Modified header
+		_, _ = w.Write([]byte("test content"))
+	}))
+	defer ts.Close()
+
+	f, err := os.CreateTemp("", "urlfilecache")
+	require.NoError(t, err)
+	defer os.Remove(f.Name())
+
+	err = ToCustomPath(ts.URL, f.Name())
+	require.NoError(t, err)
+}
+
+func TestETag(t *testing.T) {
+	const testETag = `"123456789"`
+	etagServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ifNoneMatch := r.Header.Get("If-None-Match"); ifNoneMatch == testETag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", testETag)
+		_, _ = w.Write([]byte("test content"))
+	}))
+	defer etagServer.Close()
+
+	// First request should save the ETag
+	f, err := os.CreateTemp("", "urlfilecache")
+	require.NoError(t, err)
+	defer os.Remove(f.Name())
+
+	require.NoError(t, ToCustomPath(etagServer.URL, f.Name()))
+
+	// Verify ETag was saved
+	etagPath, err := getCachePath(etagServer.URL, etagSuffix)
+	require.NoError(t, err)
+	defer os.Remove(etagPath)
+
+	require.Equal(t, testETag, readETag(etagServer.URL))
+
+	// Second request should use ETag and get 304
+	timeBeforeSecondRequest := getMtime(f.Name())
+	require.NoError(t, ToCustomPath(etagServer.URL, f.Name()))
+	timeAfterSecondRequest := getMtime(f.Name())
+
+	// File should not have been modified since we got a 304
+	require.Equal(t, timeBeforeSecondRequest, timeAfterSecondRequest)
+}
+
+func TestZeroTimeChtimes(t *testing.T) {
+	f, err := os.CreateTemp("", "test")
+	require.NoError(t, err)
+	defer os.Remove(f.Name())
+	require.NoError(t, f.Close())
+	require.NoError(t, os.Chtimes(f.Name(), time.Time{}, time.Time{}))
 }
