@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	dataSuffix = "data"
-	etagSuffix = "etag"
+	dataSuffix  = "data"
+	etagSuffix  = "etag"
+	sinceSuffix = "since"
 )
 
 var Log = log.New(io.Discard, "urlfilecache", log.LstdFlags)
@@ -99,7 +100,7 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 	// Get old mtime
 	mtime := getMtime(path) // returns empty time if nonexist
 
-	// Don't bother if file hasn't expired
+	// Don't bother if file was recently written
 	if !mtime.IsZero() && time.Since(mtime) < ttl {
 		Log.Println("TTL", ttl, "not expired for", path)
 		return nil
@@ -114,15 +115,15 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 	// such as torproject.org
 	req.Header.Set("Accept-Encoding", "identity")
 
-	if etag := readETag(url); etag != "" {
+	if etag, err := readFile(url, etagSuffix); err == nil && etag != "" {
 		Log.Printf("Existing ETag: %q", etag)
 		req.Header.Set("If-None-Match", etag)
 	}
 
 	// Only conditional request when we have an mtime
-	if !mtime.IsZero() {
-		Log.Printf("Existing file mtime: %v", mtime)
-		req.Header.Set("If-Modified-Since", mtime.Format(http.TimeFormat))
+	if lm, _ := readFile(url, sinceSuffix); lm != "" {
+		Log.Printf("Existing file mtime: %v", lm)
+		req.Header.Set("If-Modified-Since", lm)
 	}
 
 	/*
@@ -151,7 +152,7 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 	Log.Printf("Response: %d (len: %d)", resp.StatusCode, resp.ContentLength)
 
 	if resp.StatusCode == 304 {
-		// Urray! No need to fetch newer
+		// happy path
 		return nil
 	}
 
@@ -160,13 +161,15 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 	}
 
 	if etag := resp.Header.Get("ETag"); etag != "" {
-		if err := writeETag(url, etag); err != nil {
+		if err := writeFile(url, etagSuffix, etag); err != nil {
 			return err
 		}
 	}
 
-	// dont care if no last-modified header
-	lastModified, _ := http.ParseTime(resp.Header.Get("Last-Modified"))
+	// Write last-modified header to file
+	if err := writeFile(url, sinceSuffix, resp.Header.Get("Last-Modified")); err != nil {
+		return err
+	}
 
 	// Use tmpPath for atomic writes, and to be able to replace /proc/$$/self
 	tmpPath := path + ".tmp"
@@ -202,28 +205,22 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 		}
 	}
 
-	// Sync mtime for downloaded file with given header. This is required
-	// because nginx (by default) only uses caching for exact timestamp matches
-	if e := os.Chtimes(path, lastModified, lastModified); e != nil {
-		return e
-	}
-
 	return nil
 }
 
-func readETag(url string) string {
-	etagPath, err := getCachePath(url, etagSuffix)
+func readFile(url, suffix string) (string, error) {
+	path, err := getCachePath(url, suffix)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	data, _ := os.ReadFile(etagPath)
-	return string(data)
+	data, err := os.ReadFile(path)
+	return string(data), err
 }
 
-func writeETag(url, etag string) error {
-	etagPath, err := getCachePath(url, etagSuffix)
+func writeFile(url, suffix, data string) error {
+	path, err := getCachePath(url, suffix)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(etagPath, []byte(etag), 0o600)
+	return os.WriteFile(path, []byte(data), 0o600)
 }

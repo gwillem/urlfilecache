@@ -200,7 +200,9 @@ func TestETag(t *testing.T) {
 	require.NoError(t, err)
 	defer os.Remove(etagPath)
 
-	require.Equal(t, testETag, readETag(etagServer.URL))
+	etag, err := readFile(etagServer.URL, etagSuffix)
+	require.NoError(t, err)
+	require.Equal(t, testETag, etag)
 
 	// Second request should use ETag and get 304
 	timeBeforeSecondRequest := getMtime(f.Name())
