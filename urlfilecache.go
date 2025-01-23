@@ -115,14 +115,14 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 	// such as torproject.org
 	req.Header.Set("Accept-Encoding", "identity")
 
-	if etag, err := readFile(url, etagSuffix); err == nil && etag != "" {
+	if etag, _ := readFile(url, etagSuffix); etag != "" {
 		Log.Printf("Existing ETag: %q", etag)
 		req.Header.Set("If-None-Match", etag)
 	}
 
 	// Only conditional request when we have an mtime
 	if lm, _ := readFile(url, sinceSuffix); lm != "" {
-		Log.Printf("Existing file mtime: %v", lm)
+		Log.Printf("Existing last modified: %v", lm)
 		req.Header.Set("If-Modified-Since", lm)
 	}
 
@@ -151,22 +151,21 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 
 	Log.Printf("Response: %d (len: %d)", resp.StatusCode, resp.ContentLength)
 
-	if resp.StatusCode == 304 {
-		// happy path
+	// happy path
+	if resp.StatusCode == http.StatusNotModified {
+		// update mtime for ttl check
+		_ = os.Chtimes(path, time.Now().UTC(), time.Now().UTC())
 		return nil
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("bad HTTP response %s so trying previous copy instead", resp.Status)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotModified {
+		return fmt.Errorf("bad HTTP response %s, should try previous copy instead", resp.Status)
 	}
 
-	if etag := resp.Header.Get("ETag"); etag != "" {
-		if err := writeFile(url, etagSuffix, etag); err != nil {
-			return err
-		}
+	if err := writeFile(url, etagSuffix, resp.Header.Get("ETag")); err != nil {
+		return err
 	}
 
-	// Write last-modified header to file
 	if err := writeFile(url, sinceSuffix, resp.Header.Get("Last-Modified")); err != nil {
 		return err
 	}
