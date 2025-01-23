@@ -18,7 +18,7 @@ const (
 	etagSuffix = "etag"
 )
 
-var Log = log.New(os.Stderr, "urlfilecache", log.LstdFlags)
+var Log = log.New(io.Discard, "urlfilecache", log.LstdFlags)
 
 func getCachePath(url, suffix string) (string, error) {
 	hash := fmt.Sprintf("%x", sha1.Sum([]byte(url)))
@@ -88,6 +88,8 @@ func ToCustomPath(url, path string) error {
 
 // ToCustomPath uses path as explicit cache location.
 func ToCustomPathTTL(url, path string, ttl time.Duration) error {
+	Log.Println("Request for", url, "using", path)
+
 	// Ensure parent dir
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
@@ -99,6 +101,7 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 
 	// Don't bother if file hasn't expired
 	if !mtime.IsZero() && time.Since(mtime) < ttl {
+		Log.Println("TTL", ttl, "not expired for", path)
 		return nil
 	}
 
@@ -107,12 +110,18 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 		return err
 	}
 
+	// Work around broken ETag handling for compressed responses
+	// such as torproject.org
+	req.Header.Set("Accept-Encoding", "identity")
+
 	if etag := readETag(url); etag != "" {
+		Log.Printf("Existing ETag: %q", etag)
 		req.Header.Set("If-None-Match", etag)
 	}
 
 	// Only conditional request when we have an mtime
 	if !mtime.IsZero() {
+		Log.Printf("Existing file mtime: %v", mtime)
 		req.Header.Set("If-Modified-Since", mtime.Format(http.TimeFormat))
 	}
 
@@ -138,6 +147,8 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 		return err
 	}
 	defer resp.Body.Close()
+
+	Log.Printf("Response: %d (len: %d)", resp.StatusCode, resp.ContentLength)
 
 	if resp.StatusCode == 304 {
 		// Urray! No need to fetch newer
@@ -165,9 +176,11 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 		return err
 	}
 
-	if _, err = io.Copy(fh, resp.Body); err != nil {
+	bytesWritten, err := io.Copy(fh, resp.Body)
+	if err != nil {
 		return err
 	}
+	Log.Println("Wrote", bytesWritten, "bytes to", tmpPath)
 
 	if err := fh.Close(); err != nil {
 		return err
