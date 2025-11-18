@@ -19,7 +19,7 @@ data, err := os.ReadFile(path)
 
 - `WithTTL(duration)` - Don't re-fetch if file was modified within TTL period
 - `WithPath(path)` - Use a custom cache location instead of auto-generated path
-- `WithPackagePath()` - Use calling package name instead of executable name in path. This is useful if multiple applications use the same library and a single download would suffice.
+- `UsePackagePath` - Use calling package name instead of executable name in path. This is useful if multiple applications use the same library and a single download would suffice.
 
 ### Example: TTL
 
@@ -42,7 +42,7 @@ path, err := urlfilecache.ToPath("https://example.com/file.txt",
 ```go
 // Use package name instead of executable name in cache path
 path, err := urlfilecache.ToPath("https://example.com/file.txt",
-    urlfilecache.WithPackagePath())
+    urlfilecache.UsePackagePath)
 // /home/you/.cache/mypackage/<hash>.data (instead of /home/you/.cache/myapp/<hash>.data)
 ```
 

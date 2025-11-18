@@ -42,12 +42,10 @@ func getPackageName(skip int) string {
 	return fullName[lastSlash : lastSlash+firstDot]
 }
 
-// WithPackagePath configures ToPath to use the package name of the caller
+// UsePackagePath configures ToPath to use the package name of the caller
 // instead of os.Args[0]
-func WithPackagePath() Option {
-	return func(o *options) {
-		o.usePackageName = true
-	}
+func UsePackagePath(o *options) {
+	o.usePackageName = true
 }
 
 // WithTTL configures the time-to-live duration for the cache
