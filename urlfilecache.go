@@ -21,9 +21,16 @@ const (
 
 var Log = log.New(io.Discard, "urlfilecache", log.LstdFlags)
 
-func getCachePath(url, suffix string) (string, error) {
+func getCachePath(url, suffix string, opt *options) (string, error) {
+	var self string
+	if opt.usePackageName {
+		// Skip 2 frames: getPackageName itself, and getCachePath
+		self = getPackageName(3)
+	} else {
+		self = filepath.Base(os.Args[0])
+	}
+
 	hash := fmt.Sprintf("%x", sha1.Sum([]byte(url)))
-	self := filepath.Base(os.Args[0])
 	relPath := fmt.Sprintf("%s/%s.%s", self, hash, suffix)
 
 	// Try each location in order until we find one that's writable
@@ -66,29 +73,28 @@ func getMtime(path string) time.Time {
 	return time.Time{}
 }
 
-// ToPath will calculate unique cache path based on program name and source URL. Silently ignores errors.
-func ToPath(url string) (path string, err error) {
-	return ToPathTTL(url, 0)
-}
+// ToPath will calculate unique cache path based on program name and source URL.
+func ToPath(url string, opts ...Option) (string, error) {
+	opt := &options{}
+	for _, o := range opts {
+		o(opt)
+	}
 
-// ToPathTTL will calculate unique cache path based on program name and source URL.
-func ToPathTTL(url string, ttl time.Duration) (path string, err error) {
-	path, err = getCachePath(url, dataSuffix)
-	if err != nil {
+	if opt.path == "" {
+		var err error
+		opt.path, err = getCachePath(url, dataSuffix, opt)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if err := fetch(url, opt.path, opt); err != nil {
 		return "", err
 	}
-	if err := ToCustomPathTTL(url, path, ttl); err != nil {
-		return "", err
-	}
-	return path, nil
+	return opt.path, nil
 }
 
-func ToCustomPath(url, path string) error {
-	return ToCustomPathTTL(url, path, 0)
-}
-
-// ToCustomPath uses path as explicit cache location.
-func ToCustomPathTTL(url, path string, ttl time.Duration) error {
+func fetch(url, path string, opt *options) error {
 	Log.Println("Request for", url, "using", path)
 
 	// Ensure parent dir
@@ -101,8 +107,8 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 	mtime := getMtime(path) // returns empty time if nonexist
 
 	// Don't bother if file was recently written
-	if !mtime.IsZero() && time.Since(mtime) < ttl {
-		Log.Println("TTL", ttl, "not expired for", path)
+	if !mtime.IsZero() && opt.ttl > 0 && time.Since(mtime) < opt.ttl {
+		Log.Println("TTL", opt.ttl, "not expired for", path)
 		return nil
 	}
 
@@ -115,13 +121,13 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 	// such as torproject.org
 	req.Header.Set("Accept-Encoding", "identity")
 
-	if etag, _ := readFile(url, etagSuffix); etag != "" {
+	if etag, _ := readFile(url, etagSuffix, opt); etag != "" {
 		Log.Printf("Existing ETag: %q", etag)
 		req.Header.Set("If-None-Match", etag)
 	}
 
 	// Only conditional request when we have an mtime
-	if lm, _ := readFile(url, sinceSuffix); lm != "" {
+	if lm, _ := readFile(url, sinceSuffix, opt); lm != "" {
 		Log.Printf("Existing last modified: %v", lm)
 		req.Header.Set("If-Modified-Since", lm)
 	}
@@ -153,8 +159,6 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 
 	// happy path
 	if resp.StatusCode == http.StatusNotModified {
-		// update mtime for ttl check
-		_ = os.Chtimes(path, time.Now().UTC(), time.Now().UTC())
 		return nil
 	}
 
@@ -162,11 +166,11 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 		return fmt.Errorf("bad HTTP response %s, should try previous copy instead", resp.Status)
 	}
 
-	if err := writeFile(url, etagSuffix, resp.Header.Get("ETag")); err != nil {
+	if err := writeFile(url, etagSuffix, resp.Header.Get("ETag"), opt); err != nil {
 		return err
 	}
 
-	if err := writeFile(url, sinceSuffix, resp.Header.Get("Last-Modified")); err != nil {
+	if err := writeFile(url, sinceSuffix, resp.Header.Get("Last-Modified"), opt); err != nil {
 		return err
 	}
 
@@ -207,8 +211,8 @@ func ToCustomPathTTL(url, path string, ttl time.Duration) error {
 	return nil
 }
 
-func readFile(url, suffix string) (string, error) {
-	path, err := getCachePath(url, suffix)
+func readFile(url, suffix string, opt *options) (string, error) {
+	path, err := getCachePath(url, suffix, opt)
 	if err != nil {
 		return "", err
 	}
@@ -216,8 +220,8 @@ func readFile(url, suffix string) (string, error) {
 	return string(data), err
 }
 
-func writeFile(url, suffix, data string) error {
-	path, err := getCachePath(url, suffix)
+func writeFile(url, suffix, data string, opt *options) error {
+	path, err := getCachePath(url, suffix, opt)
 	if err != nil {
 		return err
 	}

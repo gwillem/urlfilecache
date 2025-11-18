@@ -9,7 +9,7 @@ import (
 
 func Example() {
 	// Cache a file with 1 hour TTL
-	path, err := ToPathTTL("https://example.com/file.txt", time.Hour)
+	path, err := ToPath("https://example.com/file.txt", WithTTL(time.Hour))
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -16,6 +16,13 @@ import (
 
 var ts *httptest.Server
 
+// toCustomPath is a test helper that allows specifying a custom path
+func toCustomPath(url, path string, opts ...Option) error {
+	opts = append(opts, WithPath(path))
+	_, err := ToPath(url, opts...)
+	return err
+}
+
 func TestMain(m *testing.M) {
 	// Setup code
 	dummyTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -60,7 +67,7 @@ func TestToCustomPath(t *testing.T) {
 	dst := f.Name()
 
 	// try A
-	require.NoError(t, ToCustomPath(ts.URL, dst))
+	require.NoError(t, toCustomPath(ts.URL, dst))
 
 	timeA := getMtime(dst)
 
@@ -69,7 +76,7 @@ func TestToCustomPath(t *testing.T) {
 	require.NoError(t, os.Chtimes(dst, timeB, timeB))
 
 	// try B, should not re-download, because newer
-	require.NoError(t, ToCustomPath(ts.URL, dst))
+	require.NoError(t, toCustomPath(ts.URL, dst))
 	timeC := getMtime(dst)
 	require.Equal(t, timeB, timeC, "2nd download should not have touched mtime")
 }
@@ -77,7 +84,7 @@ func TestToCustomPath(t *testing.T) {
 func TestReplaceSelf(t *testing.T) {
 	self, err := os.Executable()
 	require.NoError(t, err)
-	require.NoError(t, ToCustomPath(ts.URL, self))
+	require.NoError(t, toCustomPath(ts.URL, self))
 }
 
 func TestGetCachePath(t *testing.T) {
@@ -131,7 +138,7 @@ func TestGetCachePath(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.setupFunc()
 
-			got, err := getCachePath(testURL, "testdata")
+			got, err := getCachePath(testURL, "testdata", &options{})
 			if tt.wantErr {
 				require.Error(t, err)
 				return
@@ -172,7 +179,7 @@ func TestEmptyLastModifiedHeader(t *testing.T) {
 	require.NoError(t, err)
 	defer os.Remove(f.Name())
 
-	err = ToCustomPath(ts.URL, f.Name())
+	err = toCustomPath(ts.URL, f.Name())
 	require.NoError(t, err)
 }
 
@@ -193,20 +200,20 @@ func TestETag(t *testing.T) {
 	require.NoError(t, err)
 	defer os.Remove(f.Name())
 
-	require.NoError(t, ToCustomPath(etagServer.URL, f.Name()))
+	require.NoError(t, toCustomPath(etagServer.URL, f.Name()))
 
 	// Verify ETag was saved
-	etagPath, err := getCachePath(etagServer.URL, etagSuffix)
+	etagPath, err := getCachePath(etagServer.URL, etagSuffix, &options{})
 	require.NoError(t, err)
 	defer os.Remove(etagPath)
 
-	etag, err := readFile(etagServer.URL, etagSuffix)
+	etag, err := readFile(etagServer.URL, etagSuffix, &options{})
 	require.NoError(t, err)
 	require.Equal(t, testETag, etag)
 
 	// Second request should use ETag and get 304
 	timeBeforeSecondRequest := getMtime(f.Name())
-	require.NoError(t, ToCustomPath(etagServer.URL, f.Name()))
+	require.NoError(t, toCustomPath(etagServer.URL, f.Name()))
 	timeAfterSecondRequest := getMtime(f.Name())
 
 	// File should not have been modified since we got a 304
