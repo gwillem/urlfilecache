@@ -22,18 +22,19 @@ const (
 var Log = log.New(io.Discard, "urlfilecache", log.LstdFlags)
 
 func getCachePath(url, suffix string, opt *options) (string, error) {
-	var self string
-	if opt.usePackageName {
-		// Skip 2 frames: getPackageName itself, and getCachePath
-		self = getPackageName(3)
-	} else {
-		self = filepath.Base(os.Args[0])
+	if opt.cacheDir == "" {
+		var err error
+		opt.cacheDir, err = resolveCacheDir(filepath.Base(os.Args[0]))
+		if err != nil {
+			return "", err
+		}
 	}
-
 	hash := fmt.Sprintf("%x", sha1.Sum([]byte(url)))
-	relPath := fmt.Sprintf("%s/%s.%s", self, hash, suffix)
+	return filepath.Join(opt.cacheDir, hash+"."+suffix), nil
+}
 
-	// Try each location in order until we find one that's writable
+// resolveCacheDir finds a writable cache directory for the given app name.
+func resolveCacheDir(name string) (string, error) {
 	locations := []string{
 		xdg.CacheHome,
 		"/tmp",
@@ -42,23 +43,22 @@ func getCachePath(url, suffix string, opt *options) (string, error) {
 	}
 
 	for _, dir := range locations {
-		path := filepath.Join(dir, relPath)
-		// if path exists and is a regular file (not dir or symlink), it was written before
-		if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
-			// Try opening in write mode to verify writability
-			if f, err := os.OpenFile(path, os.O_WRONLY, 0o644); err == nil {
-				f.Close()
-				return path, nil
+		candidate := filepath.Join(dir, name)
+
+		// Check if directory already exists
+		if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
+			if f, err := os.CreateTemp(candidate, ".test"); err == nil {
+				os.Remove(f.Name())
+				return candidate, nil
 			}
-			continue // prev cache file exists but is not writable, find other dir
+			continue
 		}
 
-		// Ensure parent directory exists and is writable
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
-			// Try creating a temp file to verify writability
-			if f, err := os.CreateTemp(filepath.Dir(path), ".test"); err == nil {
+		// Try to create the directory
+		if err := os.MkdirAll(candidate, 0o755); err == nil {
+			if f, err := os.CreateTemp(candidate, ".test"); err == nil {
 				os.Remove(f.Name())
-				return path, nil
+				return candidate, nil
 			}
 		}
 	}
@@ -78,6 +78,23 @@ func ToPath(url string, opts ...Option) (string, error) {
 	opt := &options{}
 	for _, o := range opts {
 		o(opt)
+	}
+
+	// Resolve cache directory once, so data/etag/since files all use the
+	// same directory regardless of internal call depth.
+	if opt.cacheDir == "" {
+		var name string
+		if opt.usePackageName {
+			// skip 2: getPackageName -> ToPath -> caller
+			name = getPackageName(2)
+		} else {
+			name = filepath.Base(os.Args[0])
+		}
+		var err error
+		opt.cacheDir, err = resolveCacheDir(name)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	if opt.path == "" {

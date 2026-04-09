@@ -15,6 +15,7 @@ type options struct {
 	usePackageName bool
 	ttl            time.Duration
 	path           string
+	cacheDir       string // resolved cache directory, set on first getCachePath call
 }
 
 func getPackageName(skip int) string {

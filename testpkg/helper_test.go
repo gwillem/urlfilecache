@@ -11,6 +11,60 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestCacheFilesInSameDir verifies that data, etag, and since files all land in
+// the same directory when UsePackagePath is used, regardless of internal call depth.
+func TestCacheFilesInSameDir(t *testing.T) {
+	const testETag = `"test-etag-123"`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == testETag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", testETag)
+		w.Header().Set("Last-Modified", "Wed, 09 Apr 2026 00:00:00 GMT")
+		_, _ = w.Write([]byte("test content"))
+	}))
+	defer ts.Close()
+
+	path, err := FetchWithPackageName(ts.URL)
+	require.NoError(t, err)
+	defer os.Remove(path)
+
+	dataDir := filepath.Dir(path)
+
+	// Find all cache files for this URL in the expected directory
+	entries, err := os.ReadDir(dataDir)
+	require.NoError(t, err)
+
+	base := strings.TrimSuffix(filepath.Base(path), ".data")
+
+	var foundEtag, foundSince bool
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), base) {
+			switch {
+			case strings.HasSuffix(e.Name(), ".etag"):
+				foundEtag = true
+				content, err := os.ReadFile(filepath.Join(dataDir, e.Name()))
+				require.NoError(t, err)
+				require.Equal(t, testETag, string(content))
+				defer os.Remove(filepath.Join(dataDir, e.Name()))
+			case strings.HasSuffix(e.Name(), ".since"):
+				foundSince = true
+				defer os.Remove(filepath.Join(dataDir, e.Name()))
+			}
+		}
+	}
+
+	require.True(t, foundEtag, "etag file should be in same dir as data file (%s)", dataDir)
+	require.True(t, foundSince, "since file should be in same dir as data file (%s)", dataDir)
+
+	// Verify the directory uses the package name, not "urlfilecache"
+	require.Contains(t, strings.Split(dataDir, "/"), "testpkg",
+		"cache dir should use caller's package name")
+	require.NotContains(t, strings.Split(dataDir, "/"), "urlfilecache",
+		"cache dir should NOT use urlfilecache's own package name")
+}
+
 func TestUsePackageName(t *testing.T) {
 	// Create a test server
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
