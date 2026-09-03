@@ -69,16 +69,14 @@ func TestToCustomPath(t *testing.T) {
 	// try A
 	require.NoError(t, toCustomPath(ts.URL, dst))
 
-	timeA := getMtime(dst)
+	// Overwrite with a sentinel, so a re-download would be visible in the content.
+	require.NoError(t, os.WriteFile(dst, []byte("sentinel"), 0o644))
 
-	// Set mtime of dst to LATER
-	timeB := timeA.Add(time.Second * 1)
-	require.NoError(t, os.Chtimes(dst, timeB, timeB))
-
-	// try B, should not re-download, because newer
+	// try B, server answers 304, so the body must be left alone
 	require.NoError(t, toCustomPath(ts.URL, dst))
-	timeC := getMtime(dst)
-	require.Equal(t, timeB, timeC, "2nd download should not have touched mtime")
+	content, err := os.ReadFile(dst)
+	require.NoError(t, err)
+	require.Equal(t, "sentinel", string(content), "2nd request should not have re-downloaded")
 }
 
 func TestReplaceSelf(t *testing.T) {
@@ -212,12 +210,13 @@ func TestETag(t *testing.T) {
 	require.Equal(t, testETag, etag)
 
 	// Second request should use ETag and get 304
-	timeBeforeSecondRequest := getMtime(f.Name())
+	require.NoError(t, os.WriteFile(f.Name(), []byte("sentinel"), 0o644))
 	require.NoError(t, toCustomPath(etagServer.URL, f.Name()))
-	timeAfterSecondRequest := getMtime(f.Name())
 
-	// File should not have been modified since we got a 304
-	require.Equal(t, timeBeforeSecondRequest, timeAfterSecondRequest)
+	// Content should be untouched since we got a 304
+	content, err := os.ReadFile(f.Name())
+	require.NoError(t, err)
+	require.Equal(t, "sentinel", string(content))
 }
 
 func TestZeroTimeChtimes(t *testing.T) {
@@ -226,4 +225,44 @@ func TestZeroTimeChtimes(t *testing.T) {
 	defer os.Remove(f.Name())
 	require.NoError(t, f.Close())
 	require.NoError(t, os.Chtimes(f.Name(), time.Time{}, time.Time{}))
+}
+
+func TestNotModifiedRefreshesTTL(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("If-None-Match") != "" {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"abc"`)
+		_, _ = w.Write([]byte("test content"))
+	}))
+	defer srv.Close()
+
+	f, err := os.CreateTemp("", "urlfilecache")
+	require.NoError(t, err)
+	defer os.Remove(f.Name())
+	require.NoError(t, f.Close())
+	require.NoError(t, os.Remove(f.Name())) // start without a cached copy
+
+	// Initial download.
+	require.NoError(t, toCustomPath(srv.URL, f.Name(), WithTTL(time.Hour)))
+	require.Equal(t, 1, requests)
+
+	// Age the file past the TTL, so the next call revalidates and gets a 304.
+	old := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(f.Name(), old, old))
+
+	require.NoError(t, toCustomPath(srv.URL, f.Name(), WithTTL(time.Hour)))
+	require.Equal(t, 2, requests)
+
+	content, err := os.ReadFile(f.Name())
+	require.NoError(t, err)
+	require.Equal(t, "test content", string(content), "304 must not alter content")
+	require.True(t, getMtime(f.Name()).After(old), "304 should refresh mtime so the TTL applies again")
+
+	// TTL is fresh again, so no further request should be made.
+	require.NoError(t, toCustomPath(srv.URL, f.Name(), WithTTL(time.Hour)))
+	require.Equal(t, 2, requests, "TTL should suppress the request after a 304")
 }

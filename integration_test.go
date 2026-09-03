@@ -21,7 +21,7 @@ func TestTorIgnoresGzipETag(t *testing.T) {
 	require.NoError(t, os.Chtimes(path, initialMtime, initialMtime))
 
 	// Second request - should get 304 Not Modified due to If-Modified-Since/ETag
-	err = ToCustomPath(url, path)
+	err = toCustomPath(url, path)
 	require.NoError(t, err)
 
 	// Verify file is empty after second request (it should NOT have been updated)

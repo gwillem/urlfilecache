@@ -176,6 +176,12 @@ func fetch(url, path string, opt *options) error {
 
 	// happy path
 	if resp.StatusCode == http.StatusNotModified {
+		// Bump mtime so the TTL suppresses revalidation until it expires again.
+		// Without this the TTL stays expired forever and every call hits the network.
+		now := time.Now()
+		if err := os.Chtimes(path, now, now); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 		return nil
 	}
 
