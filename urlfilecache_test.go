@@ -140,7 +140,10 @@ func TestGetCachePath(t *testing.T) {
 		{
 			name: "cache dir not writable - should fallback to other locations",
 			setupFunc: func() {
-				xdg.CacheHome = filepath.Join("/", "readonly", ".cache")
+				// Below a regular file, so even root can't create it
+				file := filepath.Join(tmpDir, "file")
+				require.NoError(t, os.WriteFile(file, nil, 0o644))
+				xdg.CacheHome = filepath.Join(file, ".cache")
 			},
 			wantErr: false,
 			wantDir: "/tmp",
