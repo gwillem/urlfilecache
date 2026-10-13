@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCacheFilesInSameDir verifies that data, etag, and since files all land in
+// TestCacheFilesInSameDir verifies that data, etag, and checked files all land in
 // the same directory when UsePackagePath is used, regardless of internal call depth.
 func TestCacheFilesInSameDir(t *testing.T) {
 	const testETag = `"test-etag-123"`
@@ -28,7 +28,7 @@ func TestCacheFilesInSameDir(t *testing.T) {
 
 	path, err := FetchWithPackageName(ts.URL)
 	require.NoError(t, err)
-	defer os.Remove(path)
+	defer os.Remove(path) //nolint:errcheck
 
 	dataDir := filepath.Dir(path)
 
@@ -38,7 +38,7 @@ func TestCacheFilesInSameDir(t *testing.T) {
 
 	base := strings.TrimSuffix(filepath.Base(path), ".data")
 
-	var foundEtag, foundSince bool
+	var foundEtag, foundChecked bool
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), base) {
 			switch {
@@ -47,16 +47,16 @@ func TestCacheFilesInSameDir(t *testing.T) {
 				content, err := os.ReadFile(filepath.Join(dataDir, e.Name()))
 				require.NoError(t, err)
 				require.Equal(t, testETag, string(content))
-				defer os.Remove(filepath.Join(dataDir, e.Name()))
-			case strings.HasSuffix(e.Name(), ".since"):
-				foundSince = true
-				defer os.Remove(filepath.Join(dataDir, e.Name()))
+				defer os.Remove(filepath.Join(dataDir, e.Name())) //nolint:errcheck
+			case strings.HasSuffix(e.Name(), ".checked"):
+				foundChecked = true
+				defer os.Remove(filepath.Join(dataDir, e.Name())) //nolint:errcheck
 			}
 		}
 	}
 
 	require.True(t, foundEtag, "etag file should be in same dir as data file (%s)", dataDir)
-	require.True(t, foundSince, "since file should be in same dir as data file (%s)", dataDir)
+	require.True(t, foundChecked, "checked file should be in same dir as data file (%s)", dataDir)
 
 	// Verify the directory uses the package name, not "urlfilecache"
 	require.Contains(t, strings.Split(dataDir, "/"), "testpkg",
@@ -75,12 +75,12 @@ func TestUsePackageName(t *testing.T) {
 	// Get path with UsePackageName (should use "testpkg" as the package name)
 	packagePath, err := FetchWithPackageName(ts.URL)
 	require.NoError(t, err)
-	defer os.Remove(packagePath)
+	defer os.Remove(packagePath) //nolint:errcheck
 
 	// Get path without UsePackageName (should use executable name)
 	defaultPath, err := FetchDefault(ts.URL)
 	require.NoError(t, err)
-	defer os.Remove(defaultPath)
+	defer os.Remove(defaultPath) //nolint:errcheck
 
 	execName := filepath.Base(os.Args[0])
 	require.Contains(t, strings.Split(packagePath, "/"), "testpkg")

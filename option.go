@@ -13,8 +13,11 @@ type Option func(*options)
 
 type options struct {
 	usePackageName bool
+	onlyIfNewer    bool
 	ttl            time.Duration
+	dialTimeout    time.Duration
 	path           string
+	validator      func(path string) error
 	cacheDir       string // resolved cache directory, set on first getCachePath call
 }
 
@@ -61,4 +64,26 @@ func WithPath(path string) Option {
 	return func(o *options) {
 		o.path = path
 	}
+}
+
+// WithDialTimeout limits the time to establish a connection (default 10s)
+func WithDialTimeout(d time.Duration) Option {
+	return func(o *options) {
+		o.dialTimeout = d
+	}
+}
+
+// WithValidator runs fn on the downloaded file before it replaces the target.
+// If fn returns an error, the download is discarded and the target is kept.
+func WithValidator(fn func(path string) error) Option {
+	return func(o *options) {
+		o.validator = fn
+	}
+}
+
+// OnlyIfNewer keeps an existing target unless the server's Last-Modified is
+// after the target's mtime, also when the server ignores If-Modified-Since.
+// A response without Last-Modified is then an error.
+func OnlyIfNewer(o *options) {
+	o.onlyIfNewer = true
 }

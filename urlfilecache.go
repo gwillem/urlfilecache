@@ -2,9 +2,12 @@ package urlfilecache
 
 import (
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,11 +17,19 @@ import (
 )
 
 const (
-	dataSuffix  = "data"
-	etagSuffix  = "etag"
-	sinceSuffix = "since"
+	dataSuffix    = "data"
+	etagSuffix    = "etag"
+	checkedSuffix = "checked" // mtime is the time of the last server check, for the TTL
+
+	defaultDialTimeout  = 10 * time.Second
+	tlsHandshakeTimeout = 10 * time.Second
 )
 
+// responseHeaderTimeout limits the wait for response headers once the request
+// is sent. A var so tests can shorten it.
+var responseHeaderTimeout = 30 * time.Second
+
+// Log receives debug output, discarded by default
 var Log = log.New(io.Discard, "urlfilecache", log.LstdFlags)
 
 func getCachePath(url, suffix string, opt *options) (string, error) {
@@ -48,7 +59,7 @@ func resolveCacheDir(name string) (string, error) {
 		// Check if directory already exists
 		if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
 			if f, err := os.CreateTemp(candidate, ".test"); err == nil {
-				os.Remove(f.Name())
+				os.Remove(f.Name()) //nolint:errcheck
 				return candidate, nil
 			}
 			continue
@@ -57,7 +68,7 @@ func resolveCacheDir(name string) (string, error) {
 		// Try to create the directory
 		if err := os.MkdirAll(candidate, 0o755); err == nil {
 			if f, err := os.CreateTemp(candidate, ".test"); err == nil {
-				os.Remove(f.Name())
+				os.Remove(f.Name()) //nolint:errcheck
 				return candidate, nil
 			}
 		}
@@ -66,14 +77,24 @@ func resolveCacheDir(name string) (string, error) {
 	return "", fmt.Errorf("no writable location found in: %v", locations)
 }
 
-func getMtime(path string) time.Time {
-	if fi, err := os.Stat(path); err == nil {
-		return fi.ModTime().UTC()
-	}
-	return time.Time{}
+// newClient returns a client that gives up on unreachable or unresponsive
+// servers, but does not limit the duration of the body download.
+func newClient(dialTimeout time.Duration) *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: dialTimeout}).DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+	}}
 }
 
-// ToPath will calculate unique cache path based on program name and source URL.
+// ToPath downloads url to a cache path derived from the program name and url
+// (or to the WithPath target) and returns that path. An existing copy is
+// revalidated with If-Modified-Since, taken from its mtime, and If-None-Match.
+//
+// The target is only changed by renaming a complete download over it, which
+// gets the server's Last-Modified as mtime. A 304 leaves the target untouched.
 func ToPath(url string, opts ...Option) (string, error) {
 	opt := &options{}
 	for _, o := range opts {
@@ -120,16 +141,33 @@ func fetch(url, path string, opt *options) error {
 		return err
 	}
 
-	// Get old mtime
-	mtime := getMtime(path) // returns empty time if nonexist
+	checkedPath, err := getCachePath(url, checkedSuffix, opt)
+	if err != nil {
+		return err
+	}
 
-	// Don't bother if file was recently written
-	if !mtime.IsZero() && opt.ttl > 0 && time.Since(mtime) < opt.ttl {
+	// Existing copy, nil if there is none
+	old, err := os.Stat(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+
+	// Don't bother if the server was asked recently
+	if old != nil && opt.ttl > 0 && recentlyChecked(checkedPath, opt.ttl) {
 		Log.Println("TTL", opt.ttl, "not expired for", path)
 		return nil
 	}
 
-	req, err := http.NewRequest("GET", url, nil)
+	// Create the temp file before the request, so an unwritable dir fails
+	// without a download. Unique name, so concurrent fetches don't collide.
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) //nolint:errcheck // fails after a successful rename
+	defer tmp.Close()           //nolint:errcheck // already closed on success
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
@@ -138,15 +176,13 @@ func fetch(url, path string, opt *options) error {
 	// such as torproject.org
 	req.Header.Set("Accept-Encoding", "identity")
 
-	if etag, _ := readFile(url, etagSuffix, opt); etag != "" {
-		Log.Printf("Existing ETag: %q", etag)
-		req.Header.Set("If-None-Match", etag)
-	}
-
-	// Only conditional request when we have an mtime
-	if lm, _ := readFile(url, sinceSuffix, opt); lm != "" {
-		Log.Printf("Existing last modified: %v", lm)
-		req.Header.Set("If-Modified-Since", lm)
+	// Conditional request only when there is a copy to fall back on
+	if old != nil {
+		if etag, _ := readFile(url, etagSuffix, opt); etag != "" {
+			Log.Printf("Existing ETag: %q", etag)
+			req.Header.Set("If-None-Match", etag)
+		}
+		req.Header.Set("If-Modified-Since", old.ModTime().UTC().Format(http.TimeFormat))
 	}
 
 	/*
@@ -166,72 +202,101 @@ func fetch(url, path string, opt *options) error {
 
 	*/
 
-	resp, err := http.DefaultClient.Do(req)
+	dialTimeout := defaultDialTimeout
+	if opt.dialTimeout > 0 {
+		dialTimeout = opt.dialTimeout
+	}
+	client := newClient(dialTimeout)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	Log.Printf("Response: %d (len: %d)", resp.StatusCode, resp.ContentLength)
 
-	// happy path
-	if resp.StatusCode == http.StatusNotModified {
-		// Bump mtime so the TTL suppresses revalidation until it expires again.
-		// Without this the TTL stays expired forever and every call hits the network.
-		now := time.Now()
-		if err := os.Chtimes(path, now, now); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotModified {
+	switch {
+	case resp.StatusCode == http.StatusNotModified && old != nil:
+		return touch(checkedPath)
+	case resp.StatusCode != http.StatusOK:
 		return fmt.Errorf("bad HTTP response %s, should try previous copy instead", resp.Status)
 	}
 
-	if err := writeFile(url, etagSuffix, resp.Header.Get("ETag"), opt); err != nil {
-		return err
-	}
+	lastModified, lmErr := http.ParseTime(resp.Header.Get("Last-Modified"))
 
-	if err := writeFile(url, sinceSuffix, resp.Header.Get("Last-Modified"), opt); err != nil {
-		return err
-	}
-
-	// Use tmpPath for atomic writes, and to be able to replace /proc/$$/self
-	tmpPath := path + ".tmp"
-
-	fh, err := os.Create(tmpPath)
-	if err != nil {
-		return err
-	}
-
-	bytesWritten, err := io.Copy(fh, resp.Body)
-	if err != nil {
-		return err
-	}
-	Log.Println("Wrote", bytesWritten, "bytes to", tmpPath)
-
-	if err := fh.Close(); err != nil {
-		return err
-	}
-
-	// Preserve old stat (ie execute permissions),
-	// ignore error (file does not exist)
-	oldStat, _ := os.Stat(path)
-
-	// Replaces any existing path (if file)
-	if e := os.Rename(tmpPath, path); e != nil {
-		return e
-	}
-
-	// Preserve permissions, if any
-	if oldStat != nil {
-		if e := os.Chmod(path, oldStat.Mode()); e != nil {
-			return e
+	if opt.onlyIfNewer && old != nil {
+		if lmErr != nil {
+			return fmt.Errorf("no valid Last-Modified from %s, cannot tell if it is newer than %s", url, path)
+		}
+		if !lastModified.After(old.ModTime()) {
+			Log.Println("Server copy from", lastModified, "is not newer than", path)
+			return touch(checkedPath)
 		}
 	}
 
-	return nil
+	bytesWritten, err := io.Copy(tmp, resp.Body)
+	if err != nil {
+		return err
+	}
+	Log.Println("Wrote", bytesWritten, "bytes to", tmp.Name())
+
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	if opt.validator != nil {
+		if err := opt.validator(tmp.Name()); err != nil {
+			return fmt.Errorf("invalid download from %s: %w", url, err)
+		}
+	}
+
+	// Set mode (ie execute permissions) and mtime before the rename, so the
+	// target never has the wrong ones
+	mode := fs.FileMode(0o644)
+	if old != nil {
+		mode = old.Mode()
+	}
+	if err := os.Chmod(tmp.Name(), mode); err != nil {
+		return err
+	}
+
+	// The mtime is the version of the content, used for If-Modified-Since.
+	// Nginx by default only answers 304 on an exact match.
+	if lmErr == nil {
+		if err := os.Chtimes(tmp.Name(), time.Time{}, lastModified); err != nil {
+			return err
+		}
+	}
+
+	// Atomic replace, also works for a running executable
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+
+	// Sidecars only after the content is in place, so a failed download
+	// can't mark the old copy as current
+	if err := writeFile(url, etagSuffix, resp.Header.Get("ETag"), opt); err != nil {
+		return err
+	}
+	return touch(checkedPath)
+}
+
+// recentlyChecked reports whether the server was asked within ttl.
+func recentlyChecked(checkedPath string, ttl time.Duration) bool {
+	fi, err := os.Stat(checkedPath)
+	return err == nil && time.Since(fi.ModTime()) < ttl
+}
+
+// touch sets the mtime of path to now, creating it if needed.
+func touch(path string) error {
+	now := time.Now()
+	err := os.Chtimes(path, now, now)
+	if errors.Is(err, fs.ErrNotExist) {
+		return os.WriteFile(path, nil, 0o600)
+	}
+	return err
 }
 
 func readFile(url, suffix string, opt *options) (string, error) {

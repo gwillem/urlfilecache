@@ -17,9 +17,12 @@ data, err := os.ReadFile(path)
 
 `ToPath(url string, opts ...Option)` accepts the following options:
 
-- `WithTTL(duration)` - Don't re-fetch if file was modified within TTL period
+- `WithTTL(duration)` - Don't ask the server again within the TTL period
 - `WithPath(path)` - Use a custom cache location instead of auto-generated path
 - `UsePackagePath` - Use calling package name instead of executable name in path. This is useful if multiple applications use the same library and a single download would suffice.
+- `WithDialTimeout(duration)` - Give up connecting after this long (default 10s)
+- `WithValidator(func(path string) error)` - Check the download before it replaces the existing file. An error discards the download and keeps the old file.
+- `OnlyIfNewer` - Keep an existing file unless the server's `Last-Modified` is newer than its mtime, also when the server ignores `If-Modified-Since`. Without `Last-Modified`, this is an error.
 
 ### Example: TTL
 
@@ -46,7 +49,25 @@ path, err := urlfilecache.ToPath("https://example.com/file.txt",
 // /home/you/.cache/mypackage/<hash>.data (instead of /home/you/.cache/myapp/<hash>.data)
 ```
 
+### Example: Validated download
+
+```go
+// Only replace with a newer copy, and reject anything that isn't JSON
+path, err := urlfilecache.ToPath("https://example.com/data.json",
+    urlfilecache.WithPath("/var/lib/app/data.json"),
+    urlfilecache.WithDialTimeout(3*time.Second),
+    urlfilecache.WithValidator(isJSON),
+    urlfilecache.OnlyIfNewer)
+```
+
 ## Upgrading
+
+### v0.1.0
+
+- The mtime of a cached file is now the server's `Last-Modified`, and the TTL clock moved to a `<hash>.checked` sidecar. Existing `<hash>.since` files are no longer used. Servers with exact-match `If-Modified-Since` (nginx default) send each cached file once more after the upgrade.
+- Requests no longer go through `http.DefaultClient`, so changes to it have no effect. See [Timeouts](#timeouts).
+
+### v0.0.2
 
 All public methods have been consolidated under `ToPath` with optional `Option` parameters. If you're upgrading from an older version:
 
@@ -73,12 +94,18 @@ The cache location is determined in this order:
 
 ## Cache Behavior
 
-Webservers such as Nginx honour the `If-Modified-Since` header exclusively with an exact timestamp match. To mitigate this, `urlfilecache` will modify the mtime of the downloaded file to match the `Last-Modified` as given by the server.
+The mtime of a downloaded file is set to the server's `Last-Modified`. The next request sends that mtime as `If-Modified-Since`, plus the stored `ETag` as `If-None-Match`. Conditional headers are only sent when the file exists. An existing file with a mtime but no download history (such as a `WithPath` target that was installed separately) is revalidated against its own mtime.
 
-This means that if the local file is newer than the server copy, an extra download will be triggered. After that, the local & remote timestamps will match so caching is activated.
+The file is only changed by renaming a complete download over it, after the optional validator has accepted it. A 304, a failed download or a rejected download leaves it untouched. Files written for the first time get mode 0644; replaced files keep their mode.
 
-This may be a problem for development of self-updating binaries, because the newly built local binary is always newer than the server copy. In that case, ensure that your webserver will use caching for anything older than the given timestamp. For nginx, you can add this line to `nginx.conf`:
+Per URL, the cache dir holds two small sidecar files: `<hash>.etag` with the last `ETag` and `<hash>.checked`, whose mtime is the time of the last server check and drives the TTL.
+
+Webservers such as Nginx honour `If-Modified-Since` by default only on an exact timestamp match. A local file that is newer than the server copy (for example a fresh development build of a self-updating binary) then gets a 200 instead of a 304. Use `OnlyIfNewer` to keep such a file, or configure the webserver to answer 304 for anything not older than the given timestamp. For nginx, add this line to `nginx.conf`:
 
 ```
     if_modified_since before;
 ```
+
+## Timeouts
+
+Connecting gives up after 10s (see `WithDialTimeout`), the TLS handshake after 10s and waiting for response headers after 30s. The body download itself is not limited, so large files on slow links still complete.

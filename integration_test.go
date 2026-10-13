@@ -15,7 +15,9 @@ func TestTorIgnoresGzipETag(t *testing.T) {
 
 	path, err := ToPath(url)
 	require.NoError(t, err)
-	initialMtime := getMtime(path)
+	fi, err := os.Stat(path)
+	require.NoError(t, err)
+	initialMtime := fi.ModTime()
 
 	require.NoError(t, os.Truncate(path, 0))
 	require.NoError(t, os.Chtimes(path, initialMtime, initialMtime))
